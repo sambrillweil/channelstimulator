@@ -47,6 +47,11 @@ canvas{display:block;max-width:100%;background:var(--paper)}
 .readout b{display:block;font-size:20px;font-weight:600;font-variant-numeric:tabular-nums}
 .readout span{font-size:12.5px;color:var(--muted)}
 .readout .key{background:var(--voice-fill)}
+.geekgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:22px}
+.geekgrid figure{margin:0;min-width:0}
+.geekgrid h3{font-size:14px;font-weight:600;margin:0 0 6px}
+.fit{font-size:13px;margin:6px 0 0;font-variant-numeric:tabular-nums}
+.fit b{font-weight:600}
 </style>
 </head>
 <body>
@@ -104,6 +109,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
 
     <div class="checks">
       <label><input id="first3" type="checkbox"> Show first 3 channels only</label>
+      <label><input id="geek" type="checkbox"> Geek out</label>
     </div>
 
     <div class="ctl">
@@ -141,6 +147,13 @@ canvas{display:block;max-width:100%;background:var(--paper)}
         <div><b id="rTrue">–</b><span>Single-channel current, true</span></div>
         <div class="key"><b id="rOpenEst">–</b><span>Channels open, estimated</span></div>
         <div><b id="rOpen">–</b><span>Channels open, true</span></div>
+      </div>
+    </section>
+    <section class="panel" id="geekSec" hidden>
+      <div class="geekgrid">
+        <figure><h3>Power spectrum of the noise</h3><canvas id="spec"></canvas><p class="fit" id="specFit"></p></figure>
+        <figure><h3>Variance vs. mean</h3><canvas id="vm"></canvas><p class="fit" id="vmFit"></p></figure>
+        <figure><h3>Open times of single channels</h3><canvas id="dwell"></canvas><p class="fit" id="dwellFit"></p></figure>
       </div>
     </section>
   </main>
@@ -340,6 +353,139 @@ canvas{display:block;max-width:100%;background:var(--paper)}
     $('sumTitle').textContent=p.compare==='ach'?'No ACh vs. ACh':'Smooth current vs. on\u2013off channels';
   }
 
+
+  /* ---------- Geek out: fluctuation analysis ---------- */
+  function lpN(a,fc){
+    const o=Float64Array.from(a); if(!(fc>0)) return o;
+    const n=4,f=fc/Math.sqrt(Math.pow(2,1/n)-1),al=1-Math.exp(-2*Math.PI*f*DT/1000);
+    for(let k=0;k<n;k++){let y=o[0];for(let t=0;t<o.length;t++){y+=al*(o[t]-y);o[t]=y;}}
+    return o;
+  }
+  function aggCounts(N,to,tc,len,key){
+    const pC=1-Math.exp(-DT/to),pO=1-Math.exp(-DT/tc),po=to/(to+tc);
+    const r=mulberry((seed^key)>>>0),out=new Float64Array(len);
+    let n=binom(N,po,r);
+    for(let t=0;t<len;t++){const c=binom(n,pC,r),o=binom(N-n,pO,r);n+=o-c;out[t]=n;}
+    return out;
+  }
+  function record(p,tc,len,key){
+    const c=aggCounts(p.N,p.to,tc,len,key);
+    for(let t=0;t<len;t++) c[t]*=p.amp;
+    const x=lpN(c,p.fc);
+    if(p.bg>0){
+      const r=mulberry((seed^(key*7+13))>>>0),z=new Float64Array(len);
+      for(let t=0;t<len;t++) z[t]=gaussFrom(r);
+      const zf=lpN(z,p.fc);let ss=0;for(let t=0;t<len;t++) ss+=zf[t]*zf[t];
+      const sc=p.bg/Math.sqrt(ss/len);for(let t=0;t<len;t++) x[t]+=zf[t]*sc;
+    }
+    return x;
+  }
+  function fft(re,im){
+    const n=re.length;
+    for(let i=1,j=0;i<n;i++){let b=n>>1;for(;j&b;b>>=1)j^=b;j^=b;if(i<j){[re[i],re[j]]=[re[j],re[i]];[im[i],im[j]]=[im[j],im[i]];}}
+    for(let len=2;len<=n;len<<=1){
+      const ang=-2*Math.PI/len,wr=Math.cos(ang),wi=Math.sin(ang);
+      for(let i=0;i<n;i+=len){let cr=1,ci=0;
+        for(let k=0;k<len/2;k++){
+          const a=i+k,b=a+len/2,tr=re[b]*cr-im[b]*ci,ti=re[b]*ci+im[b]*cr;
+          re[b]=re[a]-tr;im[b]=im[a]-ti;re[a]+=tr;im[a]+=ti;
+          const nr=cr*wr-ci*wi;ci=cr*wi+ci*wr;cr=nr;}}
+    }
+  }
+  const FS=1000/DT;
+  function filt2(f,fc){if(!(fc>0))return 1;const f1=fc/Math.sqrt(Math.pow(2,1/4)-1);return Math.pow(1/(1+(f/f1)*(f/f1)),4);}
+  const fmtTick=v=>{if(v===0)return'0';const a=Math.abs(v);if(a>=1e4||a<0.01)return v.toExponential(0).replace('e+','e');return String(+v.toPrecision(3));};
+
+  function axesBox(ctx,w,h){return {l:52,r:w-10,t:8,b:h-34};}
+  function drawAxes(ctx,B,xr,yr,logx,logy,xl,yl){
+    const X=v=>B.l+(logx?(Math.log10(v)-Math.log10(xr[0]))/(Math.log10(xr[1])-Math.log10(xr[0])):(v-xr[0])/(xr[1]-xr[0]))*(B.r-B.l);
+    const Y=v=>B.b-(logy?(Math.log10(v)-Math.log10(yr[0]))/(Math.log10(yr[1])-Math.log10(yr[0])):(v-yr[0])/(yr[1]-yr[0]))*(B.b-B.t);
+    ctx.strokeStyle=css('--ink');ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(B.l,B.t);ctx.lineTo(B.l,B.b);ctx.lineTo(B.r,B.b);ctx.stroke();
+    ctx.fillStyle=css('--muted');ctx.font=FONT;
+    const ticks=(r,log)=>{const out=[];if(log){for(let e=Math.ceil(Math.log10(r[0]));e<=Math.floor(Math.log10(r[1]));e++)out.push(Math.pow(10,e));}else{const st=niceStep((r[1]-r[0])/4);for(let v=Math.ceil(r[0]/st)*st;v<=r[1]+1e-9;v+=st)out.push(v);}return out;};
+    ctx.textAlign='center';ticks(xr,logx).forEach(v=>{const x=X(v);ctx.beginPath();ctx.moveTo(x,B.b);ctx.lineTo(x,B.b+4);ctx.stroke();ctx.fillText(fmtTick(v),x,B.b+15);});
+    ctx.textAlign='right';ticks(yr,logy).forEach(v=>{const y=Y(v);ctx.beginPath();ctx.moveTo(B.l-4,y);ctx.lineTo(B.l,y);ctx.stroke();ctx.fillText(fmtTick(v),B.l-6,y+4);});
+    ctx.textAlign='center';ctx.fillText(xl,(B.l+B.r)/2,B.b+29);
+    ctx.save();ctx.translate(12,(B.t+B.b)/2);ctx.rotate(-Math.PI/2);ctx.fillText(yl,0,0);ctx.restore();
+    return {X,Y};
+  }
+
+  function drawSpectrum(p){
+    const len=100000,x=record(p,p.tc,len,0x51EC);
+    let m=0;for(let t=0;t<len;t++)m+=x[t];m/=len;
+    const L=4096,hop=L/2,w=new Float64Array(L);let U=0;
+    for(let i=0;i<L;i++){w[i]=0.5-0.5*Math.cos(2*Math.PI*i/(L-1));U+=w[i]*w[i];}
+    const acc=new Float64Array(L/2+1);let ns=0;
+    for(let s0=0;s0+L<=len;s0+=hop){const re=new Float64Array(L),im=new Float64Array(L);
+      for(let i=0;i<L;i++)re[i]=(x[s0+i]-m)*w[i];fft(re,im);
+      for(let k=1;k<=L/2;k++)acc[k]+=re[k]*re[k]+im[k]*im[k];ns++;}
+    const df=FS/L,fmin=df,fmax=FS/2,NB=48,bins=[];
+    for(let b=0;b<NB;b++){const lo=fmin*Math.pow(fmax/fmin,b/NB),hi=fmin*Math.pow(fmax/fmin,(b+1)/NB);let s=0,c=0;
+      for(let k=Math.ceil(lo/df);k*df<hi&&k<=L/2;k++){s+=2*acc[k]/(ns*FS*U);c++;}
+      if(c)bins.push({f:Math.sqrt(lo*hi),P:s/c});}
+    const tau=1/(1/p.to+1/p.tc)/1000, po=p.to/(p.to+p.tc), sig2=p.N*po*(1-po)*p.amp*p.amp, fcTrue=1/(2*Math.PI*tau);
+    let Hint=0;for(let k=1;k<=L/2;k++)Hint+=filt2(k*df,p.fc)*df;
+    const W=p.bg>0?p.bg*p.bg/Hint:0;
+    let best=null;
+    for(let g=0;g<240;g++){const fcc=Math.pow(10,g/240*Math.log10(3000));let sn=0,sd=0;
+      const use=bins.filter(b=>filt2(b.f,p.fc)>0.05&&b.P>0);
+      use.forEach(b=>{const H=filt2(b.f,p.fc),gg=H/(1+(b.f/fcc)**2),y=b.P-W*H;sn+=y*gg/(b.P*b.P);sd+=gg*gg/(b.P*b.P);});
+      const S0=Math.max(sd>0?sn/sd:0,1e-12);let err=0;
+      use.forEach(b=>{const H=filt2(b.f,p.fc),mdl=S0*H/(1+(b.f/fcc)**2)+W*H;err+=((b.P-mdl)/b.P)**2;});
+      if(!best||err<best.err)best={err,fcc,S0};}
+    const h=280,{ctx,w:cw}=setupCanvas($('spec'),h);ctx.clearRect(0,0,cw,h);
+    const B=axesBox(ctx,cw,h);
+    const Ps=bins.map(b=>b.P).filter(v=>v>0);let ymax=Math.max(...Ps)*3,ymin=Math.max(Math.min(...Ps)/3,ymax*1e-7);
+    const A=drawAxes(ctx,B,[fmin,fmax],[ymin,ymax],true,true,'Frequency (Hz)','Power (pA\u00b2/Hz)');
+    const clampY=v=>Math.min(B.b,Math.max(B.t,A.Y(Math.max(v,ymin))));
+    ctx.setLineDash([4,4]);ctx.strokeStyle=css('--muted');ctx.beginPath();
+    bins.forEach((b,i)=>{const y=clampY(W*filt2(b.f,p.fc));i?ctx.lineTo(A.X(b.f),y):ctx.moveTo(A.X(b.f),y);});ctx.stroke();ctx.setLineDash([]);
+    ctx.strokeStyle=css('--voice');ctx.lineWidth=2;ctx.beginPath();
+    for(let i=0;i<=120;i++){const f=fmin*Math.pow(fmax/fmin,i/120),H=filt2(f,p.fc),v=best.S0*H/(1+(f/best.fcc)**2)+W*H;i?ctx.lineTo(A.X(f),clampY(v)):ctx.moveTo(A.X(f),clampY(v));}ctx.stroke();
+    ctx.fillStyle=css('--ink');bins.forEach(b=>{ctx.beginPath();ctx.arc(A.X(b.f),clampY(b.P),2.2,0,7);ctx.fill();});
+    if(best.fcc>fmin&&best.fcc<fmax){const xx=A.X(best.fcc);ctx.strokeStyle=css('--voice');ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(xx,B.t);ctx.lineTo(xx,B.b);ctx.stroke();
+      ctx.fillStyle=css('--voice');ctx.textAlign='left';ctx.fillText('corner',xx+4,B.t+12);}
+    const tauFit=1/(2*Math.PI*best.fcc)*1000;
+    $('specFit').innerHTML='Corner frequency: <b>'+best.fcc.toFixed(1)+' Hz</b> fit, '+fcTrue.toFixed(1)+' Hz true<br>Relaxation time \u03c4: <b>'+tauFit.toFixed(2)+' ms</b> fit, '+(tau*1000).toFixed(2)+' ms true';
+  }
+
+  function drawVarMean(p,sim){
+    const ps=[0.01,0.02,0.05,0.1,0.2,0.3,0.45,0.6,0.75],pts=[];
+    ps.forEach((pp,i)=>{const tc=p.to*(1/pp-1),len=100000,x=record(p,tc,len,0xA000+i);
+      let m=0;for(let t=0;t<len;t++)m+=x[t];m/=len;let v=0;for(let t=0;t<len;t++)v+=(x[t]-m)**2;v=v/len-p.bg*p.bg;
+      pts.push({mu:m,v:Math.max(v,0),p:pp});});
+    const lin=pts.filter(q=>q.p<=0.1);let sxy=0,sxx=0;lin.forEach(q=>{sxy+=q.mu*q.v;sxx+=q.mu*q.mu;});const iLin=sxy/sxx;
+    let a11=0,a12=0,a22=0,b1=0,b2=0;pts.forEach(q=>{const x1=q.mu,x2=q.mu*q.mu;a11+=x1*x1;a12+=x1*x2;a22+=x2*x2;b1+=x1*q.v;b2+=x2*q.v;});
+    const det=a11*a22-a12*a12,aa=(b1*a22-b2*a12)/det,bb=(a11*b2-a12*b1)/det,Nfit=bb<0?-1/bb:Infinity;
+    const h=280,{ctx,w:cw}=setupCanvas($('vm'),h);ctx.clearRect(0,0,cw,h);const B=axesBox(ctx,cw,h);
+    const xmax=Math.max(...pts.map(q=>q.mu))*1.08/1000, ymax=Math.max(...pts.map(q=>q.v),p.amp*xmax*1000*0.3)*1.15;
+    const A=drawAxes(ctx,B,[0,xmax],[0,ymax],false,false,'Mean current (nA)','Variance (pA\u00b2)');
+    ctx.strokeStyle=css('--muted');ctx.setLineDash([4,4]);ctx.beginPath();ctx.moveTo(A.X(0),A.Y(0));
+    const xe=Math.min(xmax,ymax/iLin/1000);ctx.lineTo(A.X(xe),A.Y(iLin*xe*1000));ctx.stroke();ctx.setLineDash([]);
+    ctx.strokeStyle=css('--voice');ctx.lineWidth=2;ctx.beginPath();
+    for(let i=0;i<=80;i++){const mu=xmax*1000*i/80,v=aa*mu+bb*mu*mu;i?ctx.lineTo(A.X(mu/1000),A.Y(Math.max(0,Math.min(v,ymax)))):ctx.moveTo(A.X(0),A.Y(0));}ctx.stroke();
+    ctx.fillStyle=css('--ink');pts.forEach(q=>{ctx.beginPath();ctx.arc(A.X(q.mu/1000),A.Y(q.v),3.2,0,7);ctx.fill();});
+    $('vmFit').innerHTML='Single-channel current: <b>'+aa.toFixed(2)+' pA</b> fit, '+p.amp.toFixed(2)+' pA true<br>Number of channels: <b>'+(Number.isFinite(Nfit)?Math.round(Nfit).toLocaleString():'\u2013')+'</b> fit, '+p.N.toLocaleString()+' true';
+  }
+
+  function drawDwell(p,sim){
+    const durs=[];
+    for(let c=0;c<sim.Nind&&durs.length<40000;c++){const off=c*NPTS;let run=0,started=false;
+      for(let t=0;t<NPTS;t++){const s=sim.states[off+t];
+        if(s){run++;}else{if(run>0&&started)durs.push(run*DT);run=0;started=true;}}}
+    const h=280,{ctx,w:cw}=setupCanvas($('dwell'),h);ctx.clearRect(0,0,cw,h);const B=axesBox(ctx,cw,h);
+    if(durs.length<5){$('dwellFit').textContent='Too few complete openings in this run.';drawAxes(ctx,B,[0,1],[0,1],false,false,'Open duration (ms)','Openings');return;}
+    const mean=durs.reduce((a,b)=>a+b,0)/durs.length, xmax=Math.max(5*mean,DT*10), nb=40, bw=xmax/nb, hist=new Array(nb).fill(0);
+    durs.forEach(d=>{const k=Math.floor(d/bw);if(k<nb)hist[k]++;});
+    const ymax=Math.max(...hist)*1.15;const A=drawAxes(ctx,B,[0,xmax],[0,ymax],false,false,'Open duration (ms)','Openings');
+    ctx.fillStyle=css('--rule');hist.forEach((c,k)=>{const x0=A.X(k*bw),x1=A.X((k+1)*bw);ctx.fillRect(x0,A.Y(c),Math.max(1,x1-x0-1),A.Y(0)-A.Y(c));});
+    ctx.strokeStyle=css('--voice');ctx.lineWidth=2;ctx.beginPath();
+    for(let i=0;i<=100;i++){const t=xmax*i/100,v=durs.length*bw/mean*Math.exp(-(t+bw/2)/mean);i?ctx.lineTo(A.X(t),A.Y(Math.min(v,ymax))):ctx.moveTo(A.X(t),A.Y(Math.min(v,ymax)));}ctx.stroke();
+    $('dwellFit').innerHTML='Mean open time: <b>'+mean.toFixed(2)+' ms</b> measured ('+durs.length.toLocaleString()+' openings), '+p.to.toFixed(2)+' ms true';
+  }
+
+  function drawGeek(p,sim){ drawSpectrum(p); drawVarMean(p,sim); drawDwell(p,sim); }
+
   function stats(p,sim){
     let m=0,v=0;
     const raw=signal(p,sim,'chan',0);
@@ -374,6 +520,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
     const key=[p.N,p.to,p.tc].join();
     if(resim||!state.sim||state.key!==key){state.sim=simulate(p);state.key=key;}
     drawChannels(p,state.sim); if(p.compare) drawCompare(p,state.sim); else drawSum(p,state.sim); stats(p,state.sim);
+    $('geekSec').hidden=!$('geek').checked; if($('geek').checked) drawGeek(p,state.sim);
   }
 
   let raf=0; const schedule=re=>{cancelAnimationFrame(raf);raf=requestAnimationFrame(()=>run(re));};
@@ -384,7 +531,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
     $(id).addEventListener('input',()=>{$(id+'Num').value=(S2V[id]||(v=>v))(+$(id).value); if(id==='bg') $('bgNote').textContent=''; schedule(false);});
     $(id+'Num').addEventListener('input',()=>{$(id).value=(V2S[id]||(v=>v))(+$(id+'Num').value); if(id==='bg') $('bgNote').textContent=''; schedule(false);});
   });
-  ['first3'].forEach(id=>$(id).addEventListener('input',()=>schedule(false)));
+  ['first3','geek'].forEach(id=>$(id).addEventListener('input',()=>schedule(false)));
   document.querySelectorAll('[data-n]').forEach(b=>b.addEventListener('click',()=>{setVal('n',+b.dataset.n);schedule(false);}));
   const BG_NOTES={'0':'','0.06':'10 GΩ seal, 2 kHz (Hille)','0.85':'~50 MΩ seal, scaled from the gigaseal value','70':'Whole end-plate at rest, two-electrode voltage clamp, 500 Hz (Anderson & Stevens)'};
   const BG_FC={'0.06':2000,'0.85':2000,'70':500};
@@ -411,7 +558,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
   const DEFAULTS={n:100,to:5,tc:5,amp:3.4,bg:0.06,first3:false,inward:true,dots:false,avg:false};
   $('reset').addEventListener('click',()=>{
     ['n','to','tc','amp','bg'].forEach(id=>setVal(id,DEFAULTS[id])); $('bgNote').textContent=BG_NOTES['0.06']; $('fcNum').value=2000;
-    ['first3'].forEach(id=>$(id).checked=DEFAULTS[id]);
+    ['first3'].forEach(id=>$(id).checked=DEFAULTS[id]); $('geek').checked=false;
     Object.keys(PRESETS).forEach(k=>$(k).setAttribute('aria-pressed','false'));
     $('presetNote').textContent=NOTE_DEFAULT; seed=12345; setModel(''); $('pFig2').click(); schedule(true);
   });
