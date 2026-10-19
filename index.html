@@ -109,6 +109,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
 
     <div class="checks">
       <label><input id="first3" type="checkbox"> Show first 3 channels only</label>
+      <label><input id="levels" type="checkbox" checked> Unitary levels (≤ 10 channels, sealed recordings)</label>
       <label><input id="geek" type="checkbox"> Geek out</label>
     </div>
 
@@ -174,7 +175,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
   function params(){
     const num=id=>+$(id+'Num').value;
     return {N:Math.min(100000,Math.max(1,Math.round(num('n'))||1)),to:Math.max(0.05,num('to')||0.05),tc:Math.max(0.05,num('tc')||0.05),amp:Math.max(0,num('amp')||0),bg:Math.max(0,num('bg')||0),fc:Math.max(0,num('fc')||0),
-      ach:true, first3:$('first3').checked,inward:true,dots:false,avg:false,
+      ach:true, levels:$('levels').checked, first3:$('first3').checked,inward:true,dots:false,avg:false,
       smooth:false, compare:$('mSmooth').getAttribute('aria-pressed')==='true'?'smooth':$('mAch').getAttribute('aria-pressed')==='true'?'ach':''};
   }
   function lowpass(a,fc){
@@ -295,6 +296,15 @@ canvas{display:block;max-width:100%;background:var(--paper)}
     ctx.setLineDash([4,4]); ctx.strokeStyle=css('--rule'); ctx.lineWidth=1;
     ctx.beginPath(); ctx.moveTo(left,Y(0)); ctx.lineTo(right,Y(0)); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle=css('--muted'); ctx.font=FONT; ctx.textAlign='left'; ctx.fillText('0',right+8,Y(0)+4);
+    if(p.levels && sim.N<=10 && p.bg<10){
+      ctx.setLineDash([3,4]); ctx.strokeStyle=css('--muted'); ctx.lineWidth=1;
+      for(let k=1;k<=sim.N;k++){
+        const yk=Y(sign*k*p.amp/div);
+        ctx.beginPath(); ctx.moveTo(left,yk); ctx.lineTo(right,yk); ctx.stroke();
+        ctx.fillText((k===1?'':k)+'i',right+8,yk+4);
+      }
+      ctx.setLineDash([]);
+    }
     ctx.strokeStyle=css('--ink'); ctx.fillStyle=css('--ink');
     if(p.dots){for(let t=0;t<NPTS;t+=2) ctx.fillRect(left+t*sx-0.9,Y(y[t])-0.9,1.8,1.8);}
     else{ctx.lineWidth=1.3;ctx.beginPath();for(let t=0;t<NPTS;t++){const X=left+t*sx;t?ctx.lineTo(X,Y(y[t])):ctx.moveTo(X,Y(y[t]));}ctx.stroke();}
@@ -531,7 +541,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
     $(id).addEventListener('input',()=>{$(id+'Num').value=(S2V[id]||(v=>v))(+$(id).value); if(id==='bg') $('bgNote').textContent=''; schedule(false);});
     $(id+'Num').addEventListener('input',()=>{$(id).value=(V2S[id]||(v=>v))(+$(id+'Num').value); if(id==='bg') $('bgNote').textContent=''; schedule(false);});
   });
-  ['first3','geek'].forEach(id=>$(id).addEventListener('input',()=>schedule(false)));
+  ['first3','geek','levels'].forEach(id=>$(id).addEventListener('input',()=>schedule(false)));
   document.querySelectorAll('[data-n]').forEach(b=>b.addEventListener('click',()=>{setVal('n',+b.dataset.n);schedule(false);}));
   const BG_NOTES={'0':'','0.06':'10 GΩ seal, 2 kHz (Hille)','0.85':'~50 MΩ seal, scaled from the gigaseal value','70':'Whole end-plate at rest, two-electrode voltage clamp, 500 Hz (Anderson & Stevens)'};
   const BG_FC={'0.06':2000,'0.85':2000,'70':500};
@@ -558,7 +568,7 @@ canvas{display:block;max-width:100%;background:var(--paper)}
   const DEFAULTS={n:100,to:5,tc:5,amp:3.4,bg:0.06,first3:false,inward:true,dots:false,avg:false};
   $('reset').addEventListener('click',()=>{
     ['n','to','tc','amp','bg'].forEach(id=>setVal(id,DEFAULTS[id])); $('bgNote').textContent=BG_NOTES['0.06']; $('fcNum').value=2000;
-    ['first3'].forEach(id=>$(id).checked=DEFAULTS[id]); $('geek').checked=false;
+    ['first3'].forEach(id=>$(id).checked=DEFAULTS[id]); $('geek').checked=false; $('levels').checked=true;
     Object.keys(PRESETS).forEach(k=>$(k).setAttribute('aria-pressed','false'));
     $('presetNote').textContent=NOTE_DEFAULT; seed=12345; setModel(''); $('pFig2').click(); schedule(true);
   });
